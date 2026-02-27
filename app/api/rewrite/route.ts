@@ -1,128 +1,114 @@
 import { NextResponse } from 'next/server';
-import OpenAI from 'openai';
-import { detectPatterns, calculateAIScore } from '../../../lib/patterns';
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Inline pattern detection
+const PATTERNS = [
+  { id: 'zh001', pattern: '不是[^，。]+而是', severity: 'high', desc: '"不是...而是..."句式' },
+  { id: 'zh004', pattern: '简单[一来]说', severity: 'high', desc: '"简单来说"' },
+  { id: 'zh006', pattern: '总[的而]言之', severity: 'high', desc: '"总而言之"' },
+  { id: 'zh007', pattern: '综上所述', severity: 'high', desc: '"综上所述"' },
+  { id: 'zh008', pattern: '值得注意的是', severity: 'high', desc: '"值得注意的是"' },
+  { id: 'zh009', pattern: '需要[指强]调的是', severity: 'high', desc: '"需要指出的是"' },
+  { id: 'zh011', pattern: '让我[们来]深入', severity: 'high', desc: '"让我们深入探讨"' },
+  { id: 'zh015', pattern: '兜住', severity: 'high', desc: '"兜住"' },
+  { id: 'zh016', pattern: '接住', severity: 'high', desc: '"接住"' },
+  { id: 'zh022', pattern: '这不仅仅是[^，。]+更是', severity: 'high', desc: '"不仅仅是...更是..."' },
+  { id: 'en001', pattern: "It'?s worth noting", severity: 'high', desc: '"It\'s worth noting"' },
+  { id: 'en002', pattern: '[Ll]et\'?s delve', severity: 'high', desc: '"Let\'s delve into"' },
+  { id: 'en003', pattern: '[Ii]n today\'?s (rapidly )?(evolving|changing)', severity: 'high', desc: '"In today\'s rapidly evolving"' },
+  { id: 'en008', pattern: '[Ii]n conclusion', severity: 'high', desc: '"In conclusion"' },
+  { id: 'en009', pattern: '[Nn]ot [^,.]+ but (rather|instead)', severity: 'high', desc: '"Not X, but Y"' },
+  { id: 'en012', pattern: '[Gg]reat question', severity: 'high', desc: '"Great question!"' },
+  { id: 'en014', pattern: "I'?d be happy to help", severity: 'high', desc: '"I\'d be happy to help"' },
+  { id: 'zh013', pattern: '换句话说', severity: 'medium', desc: '"换句话说"' },
+  { id: 'zh024', pattern: '事实上', severity: 'medium', desc: '"事实上"' },
+  { id: 'en005', pattern: '[Ff]urthermore', severity: 'medium', desc: '"Furthermore"' },
+  { id: 'en006', pattern: '[Mm]oreover', severity: 'medium', desc: '"Moreover"' },
+];
 
-const SYSTEM_PROMPT = `You are UnAI, an expert writing editor. You remove AI-generated writing clichés and make text sound naturally human.
+function detectPatterns(text: string) {
+  const results: { id: string; desc: string; severity: string; count: number }[] = [];
+  for (const p of PATTERNS) {
+    try {
+      const regex = new RegExp(p.pattern, 'g');
+      const matches = Array.from(text.matchAll(regex));
+      if (matches.length > 0) {
+        results.push({ id: p.id, desc: p.desc, severity: p.severity, count: matches.length });
+      }
+    } catch {
+      if (text.includes(p.pattern)) {
+        results.push({ id: p.id, desc: p.desc, severity: p.severity, count: 1 });
+      }
+    }
+  }
+  return results;
+}
 
-MISSION: Rewrite the user's text to eliminate ChatGPT-style patterns while preserving original meaning, tone, and information.
+function calculateScore(text: string) {
+  const detected = detectPatterns(text);
+  if (text.length === 0) return 0;
+  let score = 0;
+  for (const d of detected) {
+    score += (d.severity === 'high' ? 15 : 8) * d.count;
+  }
+  return Math.min(100, Math.round(score / (text.length / 1000) * 2));
+}
 
-## THE 7 IRON LAWS
-1. Facts before judgments — every paragraph needs at least one anchored fact
-2. Long-short sentence alternation — no uniform sentence length
-3. Thick paragraphs as backbone — the "thick paragraph" (180-300 chars) carries analysis
-4. One-sentence paragraphs as hinges — brief sentences mark transitions, not signposts
-5. Cold endings — never end with chicken soup (未来可期/拭目以待/我们有理由相信)
-6. Delete the signpost, keep the information — when removing AI patterns, preserve info density
-7. Author voice takes priority — preserve the writer's intended expertise level
+const SYSTEM_PROMPT = `You are UnAI, an expert writing editor that removes AI-generated writing clichés.
 
-## CHINESE: BANNED STRUCTURES (命中即删)
-- 不是A而是B / 并非A而是B / 不在于A而在于B / 不只是A更是B → State point directly
-- 接下来我们将 / 我们先来看 / 下面我们 → Delete
-- 作为AI / 截至我的知识 / 希望这能帮助你 → Delete
-- 把X拆完/说完/看完, 再Y → Restructure
-- 扯下遮羞布 / 撕下面具 → Use plain language
-
-## CHINESE: BUDGETED (≤1 per article)
-- 而是 ≤1 total | 说白了/本质上/归根结底 ≤1 | 事实上/值得注意 ≤2
-- 拆解/梳理/剖析/解构/聚焦/洞察/深耕/赋能 ≤1 total
-- 底层逻辑/赛道/闭环/抓手 ≤1 total
-- Colons ≤2 per article, dashes ≤3
-
-## CHINESE: DELETE OR REPLACE
-- 值得注意的是/不可否认/毋庸置疑 → Delete, state fact directly
-- 总而言之/综上所述/简单来说/一句话概括 → Delete
-- 兜住/接住/收敛/坍缩 → 承接/维持/减少/瓦解
-- 拆一拆/掰开来看/盘一盘/捋一捋/划重点/敲黑板 → Delete
-- 无缝/直观/强大/革命性/颠覆/卓越旅程 → Use specific facts
-- 标志着/象征着/关键时刻/里程碑 → Give specific detail instead
-- 未来可期/拭目以待/挑战与机遇并存 → Cold factual ending
-- 很高兴/非常荣幸/感谢你的提问 → Delete
-- 舆论场/话语场/宏大叙事/底层逻辑/降维打击 → Use plain equivalents
-- AI metaphors (figurative): 噪音/信号/底色/光谱/滤镜/解药/土壤/基因/拼图/镜像/透镜 → Concrete language
-- 此外→另外 | 通过…来→靠/凭/用 | 随着…的发展→give specific date/event
-- 某种程度上/可能/或许/似乎 stacked → Keep max 1
-
-## CHINESE: STRUCTURAL FIXES
-- Avoid uniform paragraph lengths
-- Kill "rule of three" everywhere (首先/其次/最后)
-- No emoji in body text, no bold-as-emphasis
-- Vary sentence rhythm: mix 5-char and 30-char sentences
-
-## ENGLISH: REMOVE
-- "It's worth noting/mentioning" / "It's important to note" → Delete
-- "Let's delve into" / "In today's rapidly evolving" → Delete or be specific
-- "Furthermore" / "Moreover" → "Also" / "And" / delete
-- "In conclusion" / "Ultimately" → Delete
-- "Not X, but Y" / "This is not just X, it's Y" → State Y directly
-- "Great question!" / "Absolutely!" / "I'd be happy to help" → Delete
-- "In the realm of" / "At the end of the day" → Delete
-- Overuse of em dashes → Use commas/periods
-- "Interestingly," / "As we can see" → Delete
-
-## OUTPUT RULES
-- Return ONLY the rewritten text. No explanations, no meta-commentary.
-- Keep the same language as input
-- Preserve all factual content
-- Make it sound like a competent human wrote it on the first draft`;
+RULES:
+- Preserve ALL factual content
+- Remove Chinese AI patterns: "不是...而是...", "值得注意的是", "让我们深入探讨", "总而言之", "简单来说", "兜住/接住", "不仅...而且..."
+- Remove English AI patterns: "It's worth noting", "Let's delve into", "Furthermore/Moreover", "In conclusion", "Not X but Y", "Great question!", sycophancy
+- Keep same language as input
+- Make text flow naturally like a human wrote it
+- Return ONLY the rewritten text, nothing else`;
 
 export async function POST(req: Request) {
   try {
     const { text, mode = 'balanced' } = await req.json();
-
     if (!text || typeof text !== 'string') {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 });
     }
-
     if (text.length > 10000) {
-      return NextResponse.json({ error: 'Text too long (max 10,000 characters)' }, { status: 400 });
+      return NextResponse.json({ error: 'Max 10,000 characters' }, { status: 400 });
     }
 
-    // Step 1: Detect patterns
     const detected = detectPatterns(text);
-    const originalScore = calculateAIScore(text);
+    const originalScore = calculateScore(text);
 
-    // Step 2: LLM rewrite
-    const intensity = mode === 'light' ? 'Make minimal changes, only fix the most obvious AI patterns.' :
-                      mode === 'aggressive' ? 'Aggressively rewrite to sound completely human. Restructure sentences freely.' :
-                      'Balance naturalness with preserving the original structure.';
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
+    }
 
-    const completion = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT + '\n\nIntensity: ' + intensity },
-        { role: 'user', content: text }
-      ],
-      temperature: 0.7,
-      max_tokens: Math.min(text.length * 2, 4096),
+    const intensity = mode === 'light' ? 'Minimal changes.' : mode === 'aggressive' ? 'Aggressively rewrite.' : 'Balanced.';
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT + '\nIntensity: ' + intensity },
+          { role: 'user', content: text }
+        ],
+        temperature: 0.7,
+        max_tokens: Math.min(text.length * 2, 4096),
+      }),
     });
 
-    const rewritten = completion.choices[0]?.message?.content || text;
-    const newScore = calculateAIScore(rewritten);
+    const data = await res.json();
+    const rewritten = data.choices?.[0]?.message?.content || text;
+    const newScore = calculateScore(rewritten);
     const newDetected = detectPatterns(rewritten);
 
     return NextResponse.json({
-      original: text,
-      rewritten,
-      originalScore,
-      newScore,
-      patternsFound: detected.length,
-      patternsRemaining: newDetected.length,
-      patterns: detected.map(d => ({
-        id: d.pattern.id,
-        pattern: d.pattern.description,
-        category: d.pattern.category,
-        severity: d.pattern.severity,
-        count: Math.max(d.matches.length, 1),
-      })),
-      mode,
+      original: text, rewritten, originalScore, newScore,
+      patternsFound: detected.length, patternsRemaining: newDetected.length,
+      patterns: detected, mode,
     });
   } catch (error: unknown) {
-    console.error('Rewrite error:', error);
-    const message = error instanceof Error ? error.message : 'Internal error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    const msg = error instanceof Error ? error.message : 'Internal error';
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
