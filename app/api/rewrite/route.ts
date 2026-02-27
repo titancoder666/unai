@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import { detectPatterns, calculateAIScore } from '@/lib/patterns';
+import { detectPatterns, calculateAIScore } from '../../../lib/patterns';
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
